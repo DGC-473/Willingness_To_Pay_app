@@ -11,6 +11,56 @@ import sqlite3
 # Page config must be the first Streamlit command
 st.set_page_config(page_title="Carbon Premium Analytics", layout="wide", page_icon="🌍")
 
+# --- Custom CSS for Likert Bubbles ---
+st.markdown("""
+<style>
+/* Likert bubble styling — targets horizontal radio buttons */
+div[data-testid="stHorizontalBlock"] div[role="radiogroup"] {
+    display: flex;
+    gap: 0.6rem;
+    justify-content: center;
+}
+div[data-testid="stHorizontalBlock"] div[role="radiogroup"] label {
+    background: #102A20;
+    border: 2px solid #A7F3D0;
+    border-radius: 50%;
+    width: 48px;
+    height: 48px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: bold;
+    font-size: 1.1rem;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+div[data-testid="stHorizontalBlock"] div[role="radiogroup"] label:hover {
+    border-color: #00E676;
+    background: #1a3d2e;
+}
+div[data-testid="stHorizontalBlock"] div[role="radiogroup"] label[data-checked="true"],
+div[data-testid="stHorizontalBlock"] div[role="radiogroup"] label:has(input:checked) {
+    background: #00E676;
+    color: #0A1913;
+    border-color: #00E676;
+}
+/* Hide the default radio circle */
+div[data-testid="stHorizontalBlock"] div[role="radiogroup"] input[type="radio"] {
+    display: none;
+}
+/* Likert scale labels row */
+.likert-labels {
+    display: flex;
+    justify-content: space-between;
+    color: #A7F3D0;
+    font-size: 0.8rem;
+    margin-top: -0.5rem;
+    margin-bottom: 1rem;
+    padding: 0 0.5rem;
+}
+</style>
+""", unsafe_allow_html=True)
+
 DB_FILE = "live_wtp_data.db"
 
 def init_db():
@@ -68,10 +118,15 @@ tabs = st.tabs(["📝 Consumer Questionnaire", "📊 Live Market Analytics (Dash
 # ==========================================
 with tabs[0]:
     st.header("Step 1: Environmental Reliability (Cronbach's Setup)")
-    st.markdown("To ensure data integrity, please rate your agreement with the following statements:")
+    st.markdown("To ensure data integrity, please rate your agreement with the following statements.")
+    st.markdown('<div class="likert-labels"><span>1 — Strongly Disagree</span><span>2</span><span>3 — Neutral</span><span>4</span><span>5 — Strongly Agree</span></div>', unsafe_allow_html=True)
     
-    q1 = st.slider("1. Corporations must take immediate action on climate change.", 1, 5, 3)
-    q2 = st.slider("2. I am willing to change my consumption habits to protect the environment.", 1, 5, 3)
+    st.markdown("**1. Corporations must take immediate action on climate change.**")
+    q1 = st.radio("Q1", [1, 2, 3, 4, 5], index=2, horizontal=True, label_visibility="collapsed", key="q1")
+    
+    st.markdown("**2. I am willing to change my consumption habits to protect the environment.**")
+    q2 = st.radio("Q2", [1, 2, 3, 4, 5], index=2, horizontal=True, label_visibility="collapsed", key="q2")
+    
     env_score = (q1 + q2) / 2
     
     st.divider()
@@ -143,46 +198,64 @@ with tabs[1]:
         st.subheader("True Demand Distribution (Method A)")
         if len(df_ladder) > 0:
             fig1, ax1 = plt.subplots(figsize=(8, 5))
-            use_kde = len(df_ladder) > 1  # KDE needs at least 2 points
-            sns.histplot(df_ladder["ladder_wtp"], bins=10, kde=use_kde, color=PRIMARY_COLOR, ax=ax1, edgecolor="white", alpha=0.6)
+            use_kde = len(df_ladder) > 2  # KDE needs several points
+            bins = [0, 10, 20, 30, 50, 75, 100, 150, 200, 250, 300]
+            sns.histplot(df_ladder["ladder_wtp"], bins=bins, kde=use_kde, color=PRIMARY_COLOR, ax=ax1, edgecolor="white", alpha=0.6)
             
             median_val = df_ladder["ladder_wtp"].median()
             ax1.axvline(median_val, color=SECONDARY_COLOR, linestyle='--', linewidth=3)
-            ax1.text(median_val + 5, ax1.get_ylim()[1]*0.9, f'Median: €{int(median_val)}', color=SECONDARY_COLOR, fontsize=12, fontweight='bold')
+            ax1.text(median_val + 8, ax1.get_ylim()[1]*0.85, f'Median: €{int(median_val)}', color=SECONDARY_COLOR, fontsize=12, fontweight='bold')
             
+            ax1.set_xlim(0, 310)
+            ax1.set_ylim(bottom=0)
             ax1.set_xlabel('Max Willingness to Pay (€)', fontweight='bold')
             ax1.set_ylabel('Number of Consumers', fontweight='bold')
             ax1.spines['top'].set_visible(False)
             ax1.spines['right'].set_visible(False)
+            ax1.grid(axis='y', linestyle='--', alpha=0.3, color=AXIS_COLOR)
+            plt.tight_layout()
             st.pyplot(fig1)
         else:
-            st.write("Waiting for data...")
+            st.info("📊 Waiting for Method A responses...")
 
     # --- Plot 2: Demand Curve (DC) ---
+    ALL_OFFERS = [10, 20, 50, 75, 100, 150, 200]
     with col2:
         st.subheader("Market Tolerance Curve (Method B)")
         if not df_dc.empty:
-            # Calculate % Yes for each offer
+            # Build a full-range summary ensuring all offer levels appear
             dc_summary = df_dc.groupby(["dc_offer", "dc_vote"]).size().unstack(fill_value=0)
             if "Yes" not in dc_summary: dc_summary["Yes"] = 0
             if "No" not in dc_summary: dc_summary["No"] = 0
             
+            # Reindex to include all possible offer values
+            dc_summary = dc_summary.reindex(ALL_OFFERS, fill_value=0)
             dc_summary["total"] = dc_summary["Yes"] + dc_summary["No"]
-            dc_summary["prop_yes"] = (dc_summary["Yes"] / dc_summary["total"]) * 100
+            dc_summary["prop_yes"] = dc_summary.apply(
+                lambda r: (r["Yes"] / r["total"] * 100) if r["total"] > 0 else np.nan, axis=1
+            )
+            
+            # Only plot offers that actually have data
+            plot_data = dc_summary.dropna(subset=["prop_yes"])
             
             fig2, ax2 = plt.subplots(figsize=(8, 5))
-            ax2.plot(dc_summary.index, dc_summary["prop_yes"], marker='o', linestyle='-', linewidth=3, markersize=8, color=SECONDARY_COLOR)
+            ax2.plot(plot_data.index, plot_data["prop_yes"], marker='o', linestyle='-', linewidth=3, markersize=10, color=SECONDARY_COLOR, markeredgecolor='white', markeredgewidth=1.5)
             
             ax2.axhline(50, color='gray', linestyle='--', alpha=0.7)
-            ax2.text(ax2.get_xlim()[1]*0.6, 52, "50% Market Acceptance", color='gray', fontsize=10, fontweight='bold')
+            ax2.text(155, 53, "50% Market Acceptance", color='gray', fontsize=10, fontweight='bold')
             
+            ax2.set_xlim(0, 220)
+            ax2.set_ylim(0, 105)
+            ax2.set_xticks(ALL_OFFERS)
             ax2.set_xlabel('Proposed Green Premium (€)', fontweight='bold')
             ax2.set_ylabel('Acceptance Rate (%)', fontweight='bold')
             ax2.spines['top'].set_visible(False)
             ax2.spines['right'].set_visible(False)
+            ax2.grid(axis='both', linestyle='--', alpha=0.3, color=AXIS_COLOR)
+            plt.tight_layout()
             st.pyplot(fig2)
         else:
-            st.write("Waiting for data...")
+            st.info("📊 Waiting for Method B responses...")
             
     st.divider()
     
